@@ -1,0 +1,102 @@
+name: 定时闹钟
+
+# ── 这个仓库是什么 ──
+# 一个【公开】的"闹钟"，里面只有这一个定时脚本，**不含任何金瞳代码**。
+#
+# ── 为什么要它 ──
+# GitHub 对【新建私有仓库】的 schedule 触发极不可靠（实测投递率 11%~80% 随机波动，
+# 复杂写法与简单写法都试过、都不行），而【公开仓库】不受此影响。
+# 所以把"到点叫醒"这件事挪到这个公开仓库来做：到点由它调用 GitHub API，
+# 触发私有仓库 zfxkta/gold-eye 的日报工作流（workflow_dispatch）。
+#
+# ── 凭证 ──
+# 仓库 Secret `GH_PAT`：一个只用于触发 gold-eye 的令牌（Actions 写权限）。
+#
+# ── 时间 ──
+# 北京时间 14:09 / 18:09 / 22:09（周一至周五）。
+
+on:
+  schedule:
+    - cron: '9 6,10,14 * * 1-5'   # 主：精确时点（北京 14:09 / 18:09 / 22:09）
+    - cron: '*/15 * * * *'        # 兜底：高频唤醒，醒来判断该不该触发
+  workflow_dispatch: {}           # 手动触发 = 无条件叫一次（测试用）
+
+permissions:
+  contents: write                 # 仅用于下面的"心跳提交"
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 叫醒金瞳（该跑才叫）
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          set -e
+          export TZ=Asia/Shanghai
+          API="https://api.github.com/repos/zfxkta/gold-eye/actions/workflows/gold-eye.yml"
+
+          fire() {
+            code=$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $GH_PAT" \
+              -H "Accept: application/vnd.github+json" \
+              "$API/dispatches" -d '{"ref":"main"}')
+            echo "  → 触发请求已发送，HTTP $code"
+          }
+
+          if [ -z "$GH_PAT" ]; then echo "::error::未配置 GH_PAT"; exit 1; fi
+
+          # 手动触发 → 无条件叫一次（测试）
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "手动触发 → 无条件叫醒"; fire; exit 0
+          fi
+
+          DOW=$(date +%u)
+          if [ "$DOW" -gt 5 ]; then echo "周末（黄金市场休市）→ 不叫"; exit 0; fi
+
+          # 取"今天已过的最近档位"；若未到 14:09（凌晨/上午）则取前一天的 22:09
+          NOWMIN=$((10#$(date +%H) * 60 + 10#$(date +%M)))
+          TARGET=""
+          for S in 849 1089 1329; do [ "$NOWMIN" -ge "$S" ] && TARGET=$S; done
+          DAYOFF=0
+          if [ -z "$TARGET" ]; then TARGET=1329; DAYOFF=-1; fi
+          TARGET_TS=$(( $(date -d "today 00:00" +%s) + DAYOFF * 86400 + TARGET * 60 ))
+          echo "目标档位：$(date -d @$TARGET_TS +'%F %H:%M') 北京时间"
+
+          # 查金瞳日报最近一次"已完成"的运行
+          LATEST=$(curl -sS -H "Authorization: Bearer $GH_PAT" -H "Accept: application/vnd.github+json" \
+                     "https://api.github.com/repos/zfxkta/gold-eye/actions/workflows/gold-eye.yml/runs?per_page=1&status=completed" \
+                   | python3 -c "import sys,json;d=json.load(sys.stdin);r=d.get('workflow_runs') or [];print(r[0]['created_at'] if r else '')" 2>/dev/null || echo "")
+          LATEST_TS=0
+          [ -n "$LATEST" ] && LATEST_TS=$(date -d "$LATEST" +%s 2>/dev/null || echo 0)
+          [ "$LATEST_TS" -gt 0 ] && echo "金瞳日报最近运行：$(date -d @$LATEST_TS +'%F %H:%M') 北京时间"
+
+          if [ "$LATEST_TS" -ge "$TARGET_TS" ]; then
+            echo "✅ 该档已跑过 → 不叫（防重复）"
+          else
+            echo "⚠️ 该档尚未跑 → 叫醒金瞳"
+            fire
+          fi
+
+      - name: 心跳（防公开仓库 60 天无提交被自动禁用）
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          export TZ=Asia/Shanghai
+          [ "$(date +%u)" != "1" ] && exit 0          # 只在周一
+          [ "$(date +%H)" -lt 8 ] && exit 0           # 且周一早上之后
+          [ "$(date +%H)" -gt 9 ] && exit 0           # 只在 8~9 点之间做一次
+
+          CONTENT=$(date -u +"%F %T UTC" | base64 -w0)
+          SHA=$(gh api "repos/$GITHUB_REPOSITORY/contents/HEARTBEAT.txt" --jq .sha 2>/dev/null || echo "")
+          if [ -n "$SHA" ]; then
+            gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/HEARTBEAT.txt" \
+              -f message="heartbeat" -f content="$CONTENT" -f sha="$SHA" >/dev/null 2>&1 || true
+          else
+            gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/HEARTBEAT.txt" \
+              -f message="heartbeat" -f content="$CONTENT" >/dev/null 2>&1 || true
+          fi
+          echo "心跳已更新（保持仓库活动）"
