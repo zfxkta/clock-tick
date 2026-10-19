@@ -1,121 +1,17 @@
 name: 定时闹钟
 
-# ── 这个仓库是什么 ──
-# 一个【公开】的"闹钟"，里面只有这一个定时脚本，**不含任何金瞳代码**。
-#
-# ── 为什么要它 ──
-# GitHub 对【新建私有仓库】的 schedule 触发极不可靠（实测投递率 11%~80% 随机波动，
-# 复杂写法与简单写法都试过、都不行），而【公开仓库】不受此影响。
-# 所以把"到点叫醒"这件事挪到这个公开仓库来做：到点由它调用 GitHub API，
-# 触发私有仓库 zfxkta/gold-eye 的日报工作流（workflow_dispatch）。
-#
-# ── 凭证 ──
-# 仓库 Secret `GH_PAT`：一个只用于触发 gold-eye 的令牌（Actions 写权限）。
-#
-# ── 时间（2026-10-13 优化：改用「多条低频错峰」）──
-# 实测规律：**GitHub 对越高频的 cron 越不投递** ——
-#   `23 */4`（6 档/天）投递率约 33%；`*/30`（48 档/天）约 4%；`*/15`（96 档/天）约 3%。
-# 故改为多条**低频 + 错开分钟**的 cron，靠"总触发次数"取胜：
-#   ① 精确档 北京 14:09 / 18:09 / 22:09（周末由脚本自动跳过）
-#   ② 每 4 小时（:23）· ③ 每 3 小时（:37）· ④ 每 5 小时（:53）
-# 脚本每次醒来只做一件事：看"最近该跑的档位"是否已跑，没跑就叫一次 —— 绝不重复。
-
+# 主闹钟：保留原有的多档低频 cron（精确档 + 每 3/4/5 小时错峰）。
+# 判定与叫醒逻辑已抽到 alarm.yml（单一真源）—— 今天就是被"同一段判重逻辑散落三处"坑的。
 on:
   schedule:
-    - cron: '9 6,10,14 * * *'   # 精确档（周一~周日，周末由脚本跳过）
+    - cron: '9 6,10,14 * * *'   # 精确档（北京 14:09 / 18:09 / 22:09）
     - cron: '23 */4 * * *'      # 每 4 小时
     - cron: '37 */3 * * *'      # 每 3 小时（错峰）
     - cron: '53 */5 * * *'      # 每 5 小时（错峰）
-  workflow_dispatch: {}         # 手动触发 = 无条件叫一次（测试用）
-
-permissions:
-  contents: write                 # 仅用于下面的"心跳提交"
+  workflow_dispatch: {{}}
 
 jobs:
   tick:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: 叫醒金瞳（该跑才叫）
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
-        run: |
-          set -e
-          export TZ=Asia/Shanghai
-          API="https://api.github.com/repos/zfxkta/gold-eye/actions/workflows/gold-eye.yml"
-
-          fire() {
-            code=$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
-              -H "Authorization: Bearer $GH_PAT" \
-              -H "Accept: application/vnd.github+json" \
-              "$API/dispatches" -d '{"ref":"main"}')
-            echo "  → 触发请求已发送，HTTP $code"
-          }
-
-          if [ -z "$GH_PAT" ]; then echo "::error::未配置 GH_PAT"; exit 1; fi
-
-          # 手动触发 → 无条件叫一次（测试）
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "手动触发 → 无条件叫醒"; fire; exit 0
-          fi
-
-          DOW=$(date +%u)
-          if [ "$DOW" -gt 5 ]; then echo "周末（黄金市场休市）→ 不叫"; exit 0; fi
-
-          # 取"今天已过的最近档位"；若未到 14:09（凌晨/上午）则取前一天的 22:09
-          NOWMIN=$((10#$(date +%H) * 60 + 10#$(date +%M)))
-          TARGET=""
-          for S in 849 1089 1329; do [ "$NOWMIN" -ge "$S" ] && TARGET=$S; done
-          DAYOFF=0
-          if [ -z "$TARGET" ]; then TARGET=1329; DAYOFF=-1; fi
-          TARGET_TS=$(( $(date -d "today 00:00" +%s) + DAYOFF * 86400 + TARGET * 60 ))
-          echo "目标档位：$(date -d @$TARGET_TS +'%F %H:%M') 北京时间"
-
-          # ★★ 2026-10-19 根因修复 —— 判重不能看「最近一次工作流运行」。
-          #   私有仓库 gold-eye 的 gate 空转（run job = skipped，什么都没干）同样会留下
-          #   一条 run 记录，被这里当成"该档已跑过" ⇒ 本闹钟醒来无数次，却一次都不真正叫醒，
-          #   **形同失效**（这正是"云端不发消息"的直接原因之一）。
-          #   实证 2026-10-19 13:23：
-          #     目标档位 2026-10-18 22:09 / 金瞳日报最近运行 2026-10-19 13:08 / ✅ 不叫
-          #     —— 而 13:08 那条 run 的 run job 是 skipped（引擎根本没执行）。
-          #   改口径：只认 gold-eye-bot 身份 + `ledger:` 前缀的提交 —— 它由 gold-eye 的
-          #   「回写账本」步骤产生，只在引擎真跑完之后才会有。本机手工跑账本用 xiaog 身份，天然排除。
-          LATEST=$(curl -sS -H "Authorization: Bearer $GH_PAT" -H "Accept: application/vnd.github+json" \
-                     "https://api.github.com/repos/zfxkta/gold-eye/commits?per_page=50" \
-                   | jq -r '[.[] | select(.commit.author.name=="gold-eye-bot") | select(.commit.message|startswith("ledger:"))][0].commit.committer.date // empty' 2>/dev/null || echo "")
-          LATEST_TS=0
-          [ -n "$LATEST" ] && LATEST_TS=$(date -d "$LATEST" +%s 2>/dev/null || echo 0)
-          if [ "$LATEST_TS" -gt 0 ]; then
-            echo "金瞳最近一次真跑：$(date -d @$LATEST_TS +'%F %H:%M') 北京时间"
-          else
-            echo "金瞳最近一次真跑：查不到（按未跑处理）"
-          fi
-
-          if [ "$LATEST_TS" -ge "$TARGET_TS" ]; then
-            echo "✅ 该档已真跑 → 不叫（防重复）"
-          else
-            echo "⚠️ 该档尚未真跑 → 叫醒金瞳"
-            fire
-          fi
-
-      - name: 心跳（防公开仓库 60 天无提交被自动禁用）
-        if: github.event_name == 'schedule'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
-          export TZ=Asia/Shanghai
-          [ "$(date +%u)" != "1" ] && exit 0          # 只在周一
-          [ "$(date +%H)" -lt 8 ] && exit 0           # 且周一早上之后
-          [ "$(date +%H)" -gt 9 ] && exit 0           # 只在 8~9 点之间做一次
-
-          CONTENT=$(date -u +"%F %T UTC" | base64 -w0)
-          SHA=$(gh api "repos/$GITHUB_REPOSITORY/contents/HEARTBEAT.txt" --jq .sha 2>/dev/null || echo "")
-          if [ -n "$SHA" ]; then
-            gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/HEARTBEAT.txt" \
-              -f message="heartbeat" -f content="$CONTENT" -f sha="$SHA" >/dev/null 2>&1 || true
-          else
-            gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/HEARTBEAT.txt" \
-              -f message="heartbeat" -f content="$CONTENT" >/dev/null 2>&1 || true
-          fi
-          echo "心跳已更新（保持仓库活动）"
+    uses: ./.github/workflows/alarm.yml
+    secrets:
+      GH_PAT: ${{{{ secrets.GH_PAT }}}}
