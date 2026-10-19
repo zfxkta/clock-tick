@@ -1,0 +1,74 @@
+name: 闹钟核心（可复用）
+
+# ── 为什么拆成可复用工作流 ──
+# 2026-10-19 实测规律：**同一个仓库里，cron 越密投递率越低** ——
+#   gold-eye `*/30`（48 次/天）→ 实际只投递 12%
+#   probe     `23 */4`（6 次/天）→ 实际投递 67%
+# 而今天真正的故障是：13:23~19:07 有 **344 分钟完全没有唤醒**，14:09 档正好掉在里面。
+# ⇒ 解法不是"把一个工作流调更密"（会掉投递率），而是"**很多个低频工作流**"，
+#   每个只响几次/天 → 各自保住高投递率，合起来把全天铺满。
+# 逻辑只写在这里一份，clock-*.yml 只负责各自的 cron（避免"同一段逻辑散落 6 处"）。
+
+on:
+  workflow_call:
+    secrets:
+      GH_PAT:
+        required: true
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 叫醒金瞳（该跑才叫）
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          set -e
+          export TZ=Asia/Shanghai
+          API="https://api.github.com/repos/zfxkta/gold-eye/actions/workflows/gold-eye.yml"
+
+          fire() {
+            code=$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $GH_PAT" \
+              -H "Accept: application/vnd.github+json" \
+              "$API/dispatches" -d '{"ref":"main"}')
+            echo "  → 触发请求已发送，HTTP $code"
+          }
+
+          if [ -z "$GH_PAT" ]; then echo "::error::未配置 GH_PAT"; exit 1; fi
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "手动触发 → 无条件叫醒"; fire; exit 0
+          fi
+
+          DOW=$(date +%u)
+          if [ "$DOW" -gt 5 ]; then echo "周末（黄金市场休市）→ 不叫"; exit 0; fi
+
+          NOWMIN=$((10#$(date +%H) * 60 + 10#$(date +%M)))
+          TARGET=""
+          for S in 849 1089 1329; do [ "$NOWMIN" -ge "$S" ] && TARGET=$S; done
+          DAYOFF=0
+          if [ -z "$TARGET" ]; then TARGET=1329; DAYOFF=-1; fi
+          TARGET_TS=$(( $(date -d "today 00:00" +%s) + DAYOFF * 86400 + TARGET * 60 ))
+          echo "目标档位：$(date -d @$TARGET_TS +'%F %H:%M') 北京时间"
+
+          # ★ 只认「金瞳真跑过」的证据：gold-eye-bot 身份 + ledger: 前缀的提交。
+          #   空转的 gate 运行（run job=skipped）也会留 run 记录，不能用来判重。
+          LATEST=$(curl -sS -H "Authorization: Bearer $GH_PAT" -H "Accept: application/vnd.github+json" \
+                     "https://api.github.com/repos/zfxkta/gold-eye/commits?per_page=50" \
+                   | jq -r '[.[] | select(.commit.author.name=="gold-eye-bot") | select(.commit.message|startswith("ledger:"))][0].commit.committer.date // empty' 2>/dev/null || echo "")
+          LATEST_TS=0
+          [ -n "$LATEST" ] && LATEST_TS=$(date -d "$LATEST" +%s 2>/dev/null || echo 0)
+          if [ "$LATEST_TS" -gt 0 ]; then
+            echo "金瞳最近一次真跑：$(date -d @$LATEST_TS +'%F %H:%M') 北京时间"
+          else
+            echo "金瞳最近一次真跑：查不到（按未跑处理）"
+          fi
+
+          if [ "$LATEST_TS" -ge "$TARGET_TS" ]; then
+            echo "✅ 该档已真跑 → 不叫（防重复）"
+          else
+            echo "⚠️ 该档尚未真跑 → 叫醒金瞳"
+            fire
+          fi
