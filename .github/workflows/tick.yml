@@ -1,17 +1,17 @@
 name: 定时闹钟
 
 # 主闹钟：保留原有的多档低频 cron（精确档 + 每 3/4/5 小时错峰）。
-# 判定与叫醒逻辑已抽到 alarm.yml（单一真源）—— 今天就是被"同一段判重逻辑散落三处"坑的。
+# 判定与叫醒逻辑已抽到 alarm.yml（单一真源）—— 今天正是被"同一段判重逻辑散落三处"坑的。
 on:
   schedule:
     - cron: '9 6,10,14 * * *'   # 精确档（北京 14:09 / 18:09 / 22:09）
     - cron: '23 */4 * * *'      # 每 4 小时
     - cron: '37 */3 * * *'      # 每 3 小时（错峰）
     - cron: '53 */5 * * *'      # 每 5 小时（错峰）
-  workflow_dispatch: {{}}
+  workflow_dispatch: {}
 
 jobs:
   tick:
     uses: ./.github/workflows/alarm.yml
     secrets:
-      GH_PAT: ${{{{ secrets.GH_PAT }}}}
+      GH_PAT: ${{ secrets.GH_PAT }}
