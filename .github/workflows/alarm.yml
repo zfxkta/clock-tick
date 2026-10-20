@@ -25,7 +25,8 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           set -e
-          export TZ=Asia/Shanghai
+          # ★ v5.9: 档位以【纽约时间】定义 → 自动跟随夏令时（与 gold-eye gate 同源）
+          export TZ=America/New_York
           API="https://api.github.com/repos/zfxkta/gold-eye/actions/workflows/gold-eye.yml"
 
           fire() {
@@ -45,13 +46,15 @@ jobs:
           DOW=$(date +%u)
           if [ "$DOW" -gt 5 ]; then echo "周末（黄金市场休市）→ 不叫"; exit 0; fi
 
+          # ★ v5.9: 档位 = ET 01:10 / 05:10 / 09:10（国际 4H 收盘后 10 分钟）
+          #   换算北京：夏令 13:10/17:10/21:10 · 冬令 14:10/18:10/22:10
           NOWMIN=$((10#$(date +%H) * 60 + 10#$(date +%M)))
           TARGET=""
-          for S in 849 1089 1329; do [ "$NOWMIN" -ge "$S" ] && TARGET=$S; done
+          for S in 70 310 550; do [ "$NOWMIN" -ge "$S" ] && TARGET=$S; done
           DAYOFF=0
-          if [ -z "$TARGET" ]; then TARGET=1329; DAYOFF=-1; fi
+          if [ -z "$TARGET" ]; then TARGET=550; DAYOFF=-1; fi
           TARGET_TS=$(( $(date -d "today 00:00" +%s) + DAYOFF * 86400 + TARGET * 60 ))
-          echo "目标档位：$(date -d @$TARGET_TS +'%F %H:%M') 北京时间"
+          echo "目标档位：$(TZ=Asia/Shanghai date -d @$TARGET_TS +'%F %H:%M') 北京时间（ET $(date -d @$TARGET_TS +'%H:%M')）"
 
           # ★ 只认「金瞳真跑过」的证据：gold-eye-bot 身份 + ledger: 前缀的提交。
           #   空转的 gate 运行（run job=skipped）也会留 run 记录，不能用来判重。
@@ -61,7 +64,7 @@ jobs:
           LATEST_TS=0
           [ -n "$LATEST" ] && LATEST_TS=$(date -d "$LATEST" +%s 2>/dev/null || echo 0)
           if [ "$LATEST_TS" -gt 0 ]; then
-            echo "金瞳最近一次真跑：$(date -d @$LATEST_TS +'%F %H:%M') 北京时间"
+            echo "金瞳最近一次真跑：$(TZ=Asia/Shanghai date -d @$LATEST_TS +'%F %H:%M') 北京时间"
           else
             echo "金瞳最近一次真跑：查不到（按未跑处理）"
           fi
