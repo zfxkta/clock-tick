@@ -44,15 +44,33 @@ jobs:
           fi
 
           DOW=$(date +%u)
-          if [ "$DOW" -gt 5 ]; then echo "周末（黄金市场休市）→ 不叫"; exit 0; fi
+          # ★★ 2026-11-09 修：旧写法 `[ "$DOW" -gt 5 ]` 把**周日 21:10 档**一起跳掉了。
+          #   现货黄金 ET 周日 18:00 就开盘，18:00→21:00 那根是真 bar
+          #   ⇒ 这一行让**北京周一 10:05 档每周必然缺**，再由 gate 的「补最早未跑档」
+          #   把整条链拖慢一档（流水实证每档晚 4.0~4.7 小时）。
+          #   改成与 gold-eye gate 的 _market_open 逐字同口径：
+          #   周六全休 / 周日 18:00 前 / 周五 17:00 后。仍用 ET ⇒ 自动跟随夏令时。
+          NOWMIN=$((10#$(date +%H) * 60 + 10#$(date +%M)))
+          if [ "$DOW" -eq 6 ]; then echo "周六（黄金市场休市）→ 不叫"; exit 0; fi
+          if [ "$DOW" -eq 7 ] && [ "$NOWMIN" -lt 1080 ]; then
+            echo "周日 18:00 前（休市）→ 不叫"; exit 0
+          fi
+          if [ "$DOW" -eq 5 ] && [ "$NOWMIN" -ge 1020 ]; then
+            echo "周五 17:00 后（休市）→ 不叫"; exit 0
+          fi
 
-          # ★ v5.9: 档位 = ET 01:10 / 05:10 / 09:10（国际 4H 收盘后 10 分钟）
-          #   换算北京：夏令 13:10/17:10/21:10 · 冬令 14:10/18:10/22:10
+          # ★★ 2026-11-09：档位 3 → 4，与 gate 的 SLOTS 逐字同源（65 305 545 1265）。
+          #   旧版只有 70/310/550（ET 01:10/05:10/09:10），**缺 ET 21:05**
+          #   = 北京 10:05（冬令）/ 13:05（夏令）那一档 —— 也就是说 11-05 把档位从 3 扩到 4 时，
+          #   gate 与 schedule-probe 都改了，唯独这个闹钟没跟 ⇒ 那一档**从来没被叫醒过**。
+          #   ⚠️ 为什么用 :05 而不是原来的 :10：这个变量同时充当「档位时刻」判据
+          #      （下面 `LATEST_TS >= TARGET_TS`）。写 :10 会让准点跑完（ledger 约 +2min）
+          #      仍被判成"未跑" ⇒ 每次多叫一次，白烧额度。
           NOWMIN=$((10#$(date +%H) * 60 + 10#$(date +%M)))
           TARGET=""
-          for S in 70 310 550; do [ "$NOWMIN" -ge "$S" ] && TARGET=$S; done
+          for S in 65 305 545 1265; do [ "$NOWMIN" -ge "$S" ] && TARGET=$S; done
           DAYOFF=0
-          if [ -z "$TARGET" ]; then TARGET=550; DAYOFF=-1; fi
+          if [ -z "$TARGET" ]; then TARGET=1265; DAYOFF=-1; fi
           TARGET_TS=$(( $(date -d "today 00:00" +%s) + DAYOFF * 86400 + TARGET * 60 ))
           echo "目标档位：$(TZ=Asia/Shanghai date -d @$TARGET_TS +'%F %H:%M') 北京时间（ET $(date -d @$TARGET_TS +'%H:%M')）"
 
