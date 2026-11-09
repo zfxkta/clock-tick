@@ -68,9 +68,9 @@ jobs:
           #      仍被判成"未跑" ⇒ 每次多叫一次，白烧额度。
           NOWMIN=$((10#$(date +%H) * 60 + 10#$(date +%M)))
           TARGET=""
-          for S in 65 305 545; do [ "$NOWMIN" -ge "$S" ] && TARGET=$S; done
+          for S in 65 305 545 1265; do [ "$NOWMIN" -ge "$S" ] && TARGET=$S; done
           DAYOFF=0
-          if [ -z "$TARGET" ]; then TARGET=545; DAYOFF=-1; fi
+          if [ -z "$TARGET" ]; then TARGET=1265; DAYOFF=-1; fi
           TARGET_TS=$(( $(date -d "today 00:00" +%s) + DAYOFF * 86400 + TARGET * 60 ))
           echo "目标档位：$(TZ=Asia/Shanghai date -d @$TARGET_TS +'%F %H:%M') 北京时间（ET $(date -d @$TARGET_TS +'%H:%M')）"
 
